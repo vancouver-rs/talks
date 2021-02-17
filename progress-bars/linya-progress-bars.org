@@ -1,0 +1,355 @@
+#+TITLE: Linya - Light-weight Progress Bars
+#+AUTHOR: Colin Woodbury <colin@fosskers.ca>
+
+* Linya Preamble
+
+** Self Introduction
+
+- Colin Woodbury
+
+. . .
+
+# Both FOSS and professionally.
+
+- Haskell: 2011 - Present
+
+. . .
+
+# Just FOSS.
+
+- Rust: 2020 June - Present
+
+. . .
+
+- Author of *Aura*. Originally Haskell, currently porting it to Rust.
+
+. . .
+
+- Employee of *U-Next*, a media streaming company.
+
+. . .
+
+- Website: https://www.fosskers.ca
+
+** Overview
+
+# What are progress bars for?
+# What do they typically look like?
+# What functionality do we expect?
+# How, simply, do they work?
+
+- Anatomy of a Progress Bar
+
+. . .
+
+# Two main comparisons: pb and indicatif.
+# What do they offer?
+# How are they used?
+# What are their shortcomings?
+
+- Existing Solutions
+
+. . .
+
+# Focus: concurrent use-case.
+# Very light library.
+# Its efficiency w.r.t. to redraws.
+
+- Linya's Approach
+
+. . .
+
+# Proposal for custom fill characters.
+
+- Future Work
+
+** Expectations
+
+This presentation expects that you are familiar with Rust syntax, but otherwise
+doesn't present any advanced features.
+
+#+begin_src rust
+  impl Progress {
+      pub fn bar<S: Into<String>>(&mut self, total: usize, label: S) -> Bar {
+          let twidth = self.size.map(|(w, _)| w).unwrap_or(100);
+          let w = (twidth / 2) - 7;
+          let label: String = label.into();
+
+          // ... and so on
+      }
+  }
+#+end_src
+
+*Any questions?*
+
+* Anatomy of a Progress Bar
+
+** Form and Expectations
+
+# Terminal progress bars use terminal tricks to update the characters on a
+# screen in-place in order to give the illusion of an advancing bar.
+
+# We use these to show the progress of some operation, often concurrent ones.
+# Think download programs, like curl or wget.
+
+# Show linya "multi" demo.
+# Show credit spinners.
+
+#+begin_example
+Downloading #0                        221  [########>------------------------------------]  17%
+Downloading #3                        585  [#####################>-----------------------]  47%
+Downloading #5                        442  [################>----------------------------]  35%
+Downloading #2                        585  [#####################>-----------------------]  47%
+#+end_example
+
+. . .
+
+Expectations:
+
+. . .
+
+- Labels, numeric progress, the bar itself, percentage, and rates.
+
+. . .
+
+- Some libraries can allow the bar to disappear after the work is complete.
+
+. . .
+
+- It is best practice to out the bars to ~stderr~. Why?
+
+** Terminal Redraws and ANSI Codes
+
+How do the redraws work?
+
+# The key is ANSI codes.
+
+#+begin_src rust
+  pub fn draw(&mut self, bar: &Bar) {
+      // Initial details omitted.
+
+      write!(
+          &mut self.out,
+          "\x1B[s\x1B[{}A\r{:<l$} {:3}{} [{:#>f$}{}{:->e$}] {:3}%\x1B[u\r",
+          // ... formatting args, etc. ...
+      )
+      .unwrap();
+      self.out.flush().unwrap();
+  }
+#+end_src
+
+. . .
+
+Without a ~flush()~ call, the output won't be as fluid.
+
+# Poorly written progress bar code will often flicker or show the cursor jumping around.
+
+. . .
+
+*Any questions?*
+
+* Existing Solutions
+
+** ~pb~ and ~indicatif~
+
+These have a very similar API, although ~indicatif~ is more customizable.
+
+. . .
+
+Both allow great freedom in how the bar itself looks, and what components it includes.
+
+# https://lib.rs/crates/indicatif
+
+. . .
+
+Of the two, ~indicatif~ is more widely used.
+
+. . .
+
+The feature-richness of ~indicatif~ brings a cost: binary footprint due to ~regex~.
+
+** Problem Definition
+
+#+begin_src rust
+  use rayon::prelude::*;
+
+  fn work(foo: Foo) -> Result<(), Error> {
+      // Potentially expensive!
+  }
+
+  fn main() {
+      let foos: Vec<Foo> = todo!(); // Unknown length.
+
+      foos.into_par_iter().for_each(|foo| {
+          // We want to show progress here for each `work` call.
+      });
+  }
+#+end_src
+
+. . .
+
+*Key:* We don't know ahead of time how many bars we need.
+
+** Spawning the Bars
+
+#+begin_src rust
+  use indicatif::{MultiProgress, ProgressBar};
+
+  fn main() {
+      let foos: Vec<Foo> = todo!(); // Unknown length.
+      let m = MultiProgress::new(); // Manages its child bars via interior mutability.
+
+      // Pair each `Foo` with a child bar.
+      let bars = foos.into_iter().map(|foo| {
+          let bar = m.add(ProgressBar::new(100));
+          (foo, bar)
+      });
+
+      // Thread not managed by anything, output never inspected.
+      std::thread::spawn(move || m.join_and_clear());
+
+      bars.into_par_iter()
+          .for_each(|(foo, bar)| work(foo, bar).unwrap());
+  }
+#+end_src
+
+** Using the Bars
+
+#+begin_src rust
+  fn work(foo: Foo, bar: ProgressBar) -> Result<(), Error> {
+      // Sends a message to the parent `MultiProgress` which handles the redraw.
+      bar.inc();
+
+      // ... work ...
+
+      // Closing the bar.
+      bar.finish_and_clear();
+  }
+#+end_src
+
+. . .
+
+Issues:
+
+. . .
+
+- We can't spawn bars dynamically, because spawning a bar requires ownership of
+  the original ~MultiProgress~, which got moved into the forked thread.
+
+. . .
+
+- We need to populate and allocate an entirely new ~Vec~ to store the child bars.
+
+. . .
+
+- What if the original ~Vec~ was very large? What if it was never a ~Vec~ at
+  all, but an ~Iterator~ of unknown length? We're forced to allocate.
+
+*Any questions?*
+
+* Linya's Approach
+
+** Concurrency First
+
+Linya was written to solve pricely this use-case: dynamically spawnable bars in
+a ~rayon~ ~ParallelIterator~.
+
+#+begin_src rust
+  use linya::{Bar, Progress};
+  use rayon::prelude::*;
+  use std::sync::{Arc, Mutex};
+
+  fn main() {
+      let progress = Arc::new(Mutex::new(Progress::new()));
+
+      (0..10).into_par_iter().for_each_with(progress, |p, n| {
+          let bar: Bar = p.lock().unwrap().bar(50, format!("Downloading {}", n));
+
+          // ... Your logic ...
+
+          // Increment the bar and draw it immediately.
+          // This is likely called in some inner loop or other closure.
+          p.lock().unwrap().inc_and_draw(&bar, 10);
+      });
+  }
+#+end_src
+
+** Linya's ~Progress~ Type
+
+#+begin_src rust
+  pub struct Progress {
+      /// The drawable bars themselves.
+      bars: Vec<SubBar>,
+      /// A shared handle to `Stderr`.
+      ///
+      /// Line-buffered so that the cursor doesn't jump around unpleasantly.
+      out: LineWriter<Stderr>,
+      /// Terminal width and height.
+      size: Option<(usize, usize)>,
+  }
+
+  impl Progress {
+      pub fn bar<S: Into<String>>(&mut self, total: usize, label: S) -> Bar {}
+
+      pub fn inc_and_draw(&mut self, bar: &Bar, value: usize) {}
+  }
+
+  pub struct Bar(usize);
+#+end_src
+
+# This design guarantees that there is only ever one draw to the screen at a time.
+# It's easy to understand, there are no surprises: we just use an ~Arc~ as usual.
+
+# Furthermore, inc_and_draw is smart: it only redraws the line corresponding to
+# the given Bar. Indicatif and PB redraw the whole set, and allocate new Strings
+# on the heap as they do it.
+
+** Drawing Interval
+
+Linya's policy: *Only draw if there's something to show.*
+
+#+begin_src rust
+  pub fn draw(&mut self, bar: &Bar) {
+      let diff = 100 * (b.curr - b.prev) / b.total;
+
+      if diff >= 1 {
+          // Actual drawing.
+      }
+  }
+#+end_src
+
+# Indicatif and PB do redraws at specific timing, which means they constantly
+# have to repoll the system for a timestamp.
+
+* Future Work
+
+** Custom Fill Characters
+
+Unfortunately, we can't customize the fill characters. At the moment, Linya
+users are stuck with ~#~ and ~>~.
+
+#+begin_src rust
+  pub fn draw(&mut self, bar: &Bar) {
+      write!(
+          &mut self.out,
+          "\x1B[s\x1B[{}A\r{:<l$} {:3}{} [{:#>f$}{}{:->e$}] {:3}%\x1B[u\r",
+          // ... formatting args, etc. ...
+      )
+      .unwrap();
+  }
+#+end_src
+
+https://internals.rust-lang.org/t/fmt-dynamic-fill-character/13609
+
+* Thank you!
+
+** Addendum: Rust Tools
+
+- ~alacritty~: This terminal.
+- ~bat~: A smarter ~cat~.
+- ~rg~: "Ripgrep". A grep/ack/ag replacement.
+- ~dust~: Human-friendly ~du~.
+- ~diskonaut~: Find and delete large files.
+- ~fd~: A better ~find~.
+
+This presentation is just an Emacs ~.org~ file presented via ~patat~.
