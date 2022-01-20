@@ -2,7 +2,7 @@
 
 ### Slides
 
-[rust-gotchas-idioms-and-tips.pdf](#)
+[rust-gotchas-idioms-and-tips.pdf](rust-gotchas-idioms-and-tips.pdf)
 
 ### Playground Links
 
