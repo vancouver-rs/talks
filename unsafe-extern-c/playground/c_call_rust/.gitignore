@@ -1,0 +1,7 @@
+/target
+
+# C sample app binary
+main
+
+# Generated C bindings header file
+cffi.h
