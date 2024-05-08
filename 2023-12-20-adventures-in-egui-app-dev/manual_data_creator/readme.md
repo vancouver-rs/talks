@@ -1,5 +1,7 @@
 # Manual Dataset Creator
 
+Edit: I've open sourced the current version [here](https://github.com/uruth-lab/dbv/). And as a web app [here](https://uruth-lab.github.io/dbv/).
+
 This is a work in progress and this is the version shown at the 2023-12-20 Vancouver Rust Meetup. 
 See link to slides [here](https://docs.google.com/presentation/d/e/2PACX-1vRmPOBXb5wgJ2EoPayRnzX773pdCbJxqq61YaX1dZ1IJjEmbzOE8RKLtCCUxWkQHNoWRmAyLQC1TVim/pub?start=false&loop=false).
 To run the program locally use `cargo run`. To startup a webserver and run in your browser use `trunk serve`.
