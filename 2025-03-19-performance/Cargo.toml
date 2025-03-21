@@ -1,0 +1,26 @@
+[package]
+name = "perf-rs"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "perfrs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "hello-svc"
+path = "src/main.rs"
+
+[dependencies]
+axum = "0.8.1"
+tokio = { version = "1.44.1", features=["full"] }
+
+[dev-dependencies]
+criterion = "0.3"
+
+[profile.release]
+debug = true
+
+[[bench]]
+name = "fib_bench"
+harness = false
